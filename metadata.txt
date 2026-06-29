@@ -1,0 +1,6 @@
+[general]
+name=Advanced Filter
+description=Advanced multi-condition layer filter
+author=Same2112
+icon=icon.svg
+version=1.0
