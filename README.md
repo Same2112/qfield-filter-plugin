@@ -10,3 +10,5 @@
 Доступен список отфильтрованных объектов.
 
 Все остальные объекты, удаляются со слоя, пока не измениться условия или не отменити фильтрацию.
+
+Ссылка для установки в qfild: https://github.com/Same2112/qfield-filter-plugin/releases/download/test/qfield-filter-plugin.zip
