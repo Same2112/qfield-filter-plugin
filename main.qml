@@ -17,13 +17,53 @@ Item {
     property var selectedLayer: null
     property bool filterActive: false
     property bool isFormVisible: false
+    property bool showFeatureList: false   // новый чекбокс
 
     property var conditionsModel: ListModel {}
     property string savedLayerName: ""
     property string savedExpr: ""
 
+    // Для списка объектов
+    property var pendingFormLayer: null
+    property string pendingFormExpr: ""
+    property bool useListOffset: false
+    property bool isReturnAction: false
+
     property color highlightColor: "#80cc28"
     property color origProjectColor: "yellow"
+    property var highlightItem: null
+    property color origFocusColor: "#ff7777"
+    property color origSelectedColor: Theme.mainColor
+    property color origBaseColor: "yellow"
+    property color targetFocusColor: "#D500F9"
+    property color targetSelectedColor: "#23FF0A"
+
+    // === ТАЙМЕРЫ ДЛЯ СПИСКА ===
+    Timer {
+        id: openListTimer
+        interval: 250
+        repeat: false
+        onTriggered: {
+            if (featureFormItem && pendingFormLayer && pendingFormExpr) {
+                try {
+                    featureFormItem.model.setFeatures(pendingFormLayer, pendingFormExpr)
+                    if (featureFormItem.extentController) featureFormItem.extentController.autoZoom = true
+                    featureFormItem.show()
+                    pendingFormLayer = null
+                    pendingFormExpr = ""
+                } catch(e) {
+                    console.error("Error opening list:", e)
+                }
+            }
+        }
+    }
+
+    Timer {
+        id: zoomTimer
+        interval: 200
+        repeat: false
+        onTriggered: performZoom()
+    }
 
     // === ИНИЦИАЛИЗАЦИЯ ===
     Component.onCompleted: {
@@ -31,6 +71,57 @@ Item {
         updateLayers()
         if (featureFormItem) isFormVisible = featureFormItem.visible
         if (qgisProject) origProjectColor = qgisProject.selectionColor
+
+        // Сохраняем оригинальные цвета выделения
+        var container = iface.findItemByObjectName("mapCanvasContainer")
+        if (container) findHighlighterRecursive(container)
+        applyCustomColors()
+    }
+
+    // === ПОИСК ЭЛЕМЕНТА ПОДСВЕТКИ ДЛЯ ЦВЕТОВ ===
+    function findHighlighterRecursive(parentItem) {
+        if (!parentItem) return null
+        var kids = parentItem.data
+        if (!kids) return null
+        for (var i = 0; i < kids.length; i++) {
+            var item = kids[i]
+            if (item && item.hasOwnProperty("focusedColor") && item.hasOwnProperty("selectedColor")) {
+                if (!item.hasOwnProperty("showSelectedOnly") || item.showSelectedOnly === false) {
+                    highlightItem = item
+                    origFocusColor = item.focusedColor
+                    origSelectedColor = item.selectedColor
+                    if (item.hasOwnProperty("color")) origBaseColor = item.color
+                    return item
+                }
+            }
+            var found = findHighlighterRecursive(item)
+            if (found) return found
+        }
+        return null
+    }
+
+    function applyCustomColors() {
+        if (!highlightItem) {
+            var container = iface.findItemByObjectName("mapCanvasContainer")
+            if (container) findHighlighterRecursive(container)
+        }
+        if (highlightItem) {
+            highlightItem.focusedColor = targetFocusColor
+            highlightItem.selectedColor = targetSelectedColor
+            if (highlightItem.hasOwnProperty("color")) highlightItem.color = targetSelectedColor
+        }
+        if (qgisProject) qgisProject.selectionColor = targetSelectedColor
+        if (mapCanvas) mapCanvas.refresh()
+    }
+
+    function restoreOriginalColors() {
+        if (highlightItem) {
+            highlightItem.focusedColor = origFocusColor
+            highlightItem.selectedColor = origSelectedColor
+            if (highlightItem.hasOwnProperty("color")) highlightItem.color = origBaseColor
+        }
+        if (qgisProject) qgisProject.selectionColor = origProjectColor
+        if (mapCanvas) mapCanvas.refresh()
     }
 
     // === КНОПКА НА ПАНЕЛИ ===
@@ -115,7 +206,6 @@ Item {
             if (operator === "LIKE" || operator === "ILIKE") {
                 part = '"' + fieldName + '" ' + operator + ' \'%' + escapedValue + '%\''
             } else {
-                // Проверяем, является ли значение числом (для дат нужно будет экранировать иначе, но оставим как есть)
                 if (!isNaN(value) && value.trim() !== "") {
                     part = '"' + fieldName + '" ' + operator + ' ' + value
                 } else {
@@ -145,7 +235,7 @@ Item {
             if (expr) {
                 // Устанавливаем подзапрос (фильтр отображения)
                 selectedLayer.subsetString = expr
-                // Дополнительно выделяем объекты, чтобы визуально подсветить
+                // Выделяем объекты
                 selectedLayer.removeSelection()
                 selectedLayer.selectByExpression(expr)
                 selectedLayer.triggerRepaint()
@@ -154,6 +244,13 @@ Item {
                 savedLayerName = selectedLayer.name
                 if (infoBanner) infoBanner.visible = true
                 mainWindow.displayToast(tr("Filter applied: ") + conditionsModel.count + tr(" conditions"))
+
+                // Если включен показ списка, открываем его
+                if (showFeatureList && featureFormItem) {
+                    pendingFormLayer = selectedLayer
+                    pendingFormExpr = expr
+                    openListTimer.restart()
+                }
             } else {
                 // Снимаем фильтр
                 selectedLayer.subsetString = ""
@@ -165,6 +262,8 @@ Item {
                 savedExpr = ""
                 if (infoBanner) infoBanner.visible = false
                 mainWindow.displayToast(tr("Filter cleared"))
+                // Закрываем список, если открыт
+                if (featureFormItem) featureFormItem.state = "Hidden"
             }
         } catch (e) {
             console.error("Filter error: " + e)
@@ -194,6 +293,8 @@ Item {
         savedLayerName = ""
         savedExpr = ""
         conditionsModel.clear()
+        showFeatureList = false
+        if (showListCheck) showListCheck.checked = false
 
         if (featureFormItem) featureFormItem.state = "Hidden"
 
@@ -251,6 +352,63 @@ Item {
         }
     }
 
+    // === ЗУМ НА ВЫБРАННЫЙ ОБЪЕКТ ===
+    function performZoom() {
+        if (!selectedLayer) return
+        var bbox = selectedLayer.boundingBoxOfSelected()
+        if (!bbox || bbox.xMinimum > bbox.xMaximum) {
+            var features = selectedLayer.selectedFeatures()
+            if (features && features.length > 0 && features[0].geometry) {
+                bbox = features[0].geometry.boundingBox
+            }
+        }
+        if (!bbox) return
+
+        // Увеличиваем чуть-чуть для отступа
+        var margin = 1.25
+        var cx = (bbox.xMinimum + bbox.xMaximum) / 2
+        var cy = (bbox.yMinimum + bbox.yMaximum) / 2
+        var w = (bbox.xMaximum - bbox.xMinimum) * margin
+        var h = (bbox.yMaximum - bbox.yMinimum) * margin
+        if (w < 0.001) w = 0.001
+        if (h < 0.001) h = 0.001
+
+        var finalExtent = {
+            xMinimum: cx - w/2,
+            xMaximum: cx + w/2,
+            yMinimum: cy - h/2,
+            yMaximum: cy + h/2
+        }
+
+        try {
+            var destCrs = mapCanvas.mapSettings.destinationCrs
+            var rect = GeometryUtils.reprojectRectangle(
+                bbox,
+                selectedLayer.crs,
+                destCrs
+            )
+            if (rect) {
+                var cx2 = (rect.xMinimum + rect.xMaximum) / 2
+                var cy2 = (rect.yMinimum + rect.yMaximum) / 2
+                var w2 = (rect.xMaximum - rect.xMinimum) * margin
+                var h2 = (rect.yMaximum - rect.yMinimum) * margin
+                if (w2 < 0.001) w2 = 0.001
+                if (h2 < 0.001) h2 = 0.001
+
+                var extent = {
+                    xMinimum: cx2 - w2/2,
+                    xMaximum: cx2 + w2/2,
+                    yMinimum: cy2 - h2/2,
+                    yMaximum: cy2 + h2/2
+                }
+                mapCanvas.mapSettings.setExtent(extent, true)
+                mapCanvas.refresh()
+            }
+        } catch (e) {
+            console.error("Zoom error:", e)
+        }
+    }
+
     function tr(text) {
         var isFr = Qt.locale().name.substring(0, 2) === "fr"
         var dic = {
@@ -266,7 +424,8 @@ Item {
             "Add condition": "Добавить условие",
             "Apply filter": "Применить фильтр",
             "Delete filter": "Удалить фильтр",
-            "Please select a layer first": "Сначала выберите слой"
+            "Please select a layer first": "Сначала выберите слой",
+            "Show feature list": "Показать список объектов"
         }
         return isFr && dic[text] ? dic[text] : (dic[text] || text)
     }
@@ -530,6 +689,27 @@ Item {
                 }
             }
 
+            // === ЧЕКБОКС "ПОКАЗАТЬ СПИСОК" ===
+            CheckBox {
+                id: showListCheck
+                text: tr("Show feature list")
+                checked: showFeatureList
+                Layout.fillWidth: true
+                onToggled: {
+                    showFeatureList = checked
+                    // Если фильтр уже активен и список включен, сразу открываем его
+                    if (filterActive && checked) {
+                        if (selectedLayer && savedExpr) {
+                            pendingFormLayer = selectedLayer
+                            pendingFormExpr = savedExpr
+                            openListTimer.restart()
+                        }
+                    } else if (!checked && featureFormItem) {
+                        featureFormItem.state = "Hidden"
+                    }
+                }
+            }
+
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 5
@@ -573,6 +753,29 @@ Item {
                         applyFilter()
                     }
                 }
+            }
+        }
+    }
+
+    // === ОБРАБОТКА ВЫБОРА ОБЪЕКТА ИЗ СПИСКА ===
+    Connections {
+        target: featureFormItem
+        ignoreUnknownSignals: true
+        function onFeatureSelected(feature) {
+            if (feature && selectedLayer) {
+                selectedLayer.removeSelection()
+                selectedLayer.select(feature.id)
+                applyCustomColors()
+                useListOffset = true
+                isReturnAction = false
+                zoomTimer.restart()
+            }
+        }
+        function onVisibleChanged() {
+            filterToolRoot.isFormVisible = featureFormItem.visible
+            if (!featureFormItem.visible) {
+                // Если список закрыт, но мы хотели его показывать, то при повторном открытии диалога чекбокс должен быть в синхронизации
+                // ничего не делаем
             }
         }
     }
