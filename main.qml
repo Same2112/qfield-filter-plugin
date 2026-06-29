@@ -8,37 +8,28 @@ import org.qgis
 Item {
     id: filterToolRoot
 
-    // === PROPRIÉTÉS QFIELD ===
+    // === ПРОПЕРТИ ===
     property var mainWindow: iface.mainWindow()
     property var mapCanvas: iface.mapCanvas()
     property var featureFormItem: iface.findItemByObjectName("featureForm")
     property var dashBoard: iface.findItemByObjectName('dashBoard')
 
-    // === СОСТОЯНИЕ ФИЛЬТРА ===
     property var selectedLayer: null
     property bool filterActive: false
     property bool isFormVisible: false
 
-    // === СПИСОК УСЛОВИЙ ===
-    property var conditions: []
-    property var conditionComponents: []
-
-    // === ПЕРСИСТАНТНОСТЬ ===
+    property var conditionsModel: ListModel {}
     property string savedLayerName: ""
     property string savedExpr: ""
 
-    // === ЦВЕТА ===
     property color highlightColor: "#80cc28"
     property color origProjectColor: "yellow"
-    property var highlightItem: null
 
     // === ИНИЦИАЛИЗАЦИЯ ===
     Component.onCompleted: {
         iface.addItemToPluginsToolbar(toolbarButton)
         updateLayers()
-
         if (featureFormItem) isFormVisible = featureFormItem.visible
-
         if (qgisProject) origProjectColor = qgisProject.selectionColor
     }
 
@@ -49,197 +40,131 @@ Item {
         iconColor: Theme.mainColor
         bgcolor: Theme.darkGray
         round: true
-
-        onClicked: {
-            console.log("Toolbar button clicked")
-            openFilterUI()
-        }
-
+        onClicked: openFilterUI()
         onPressAndHold: {
             removeAllFilters()
             mainWindow.displayToast(tr("Filter deleted"))
         }
     }
 
-    // === ФУНКЦИЯ ОТКРЫТИЯ UI ===
+    // === ФУНКЦИИ ===
     function openFilterUI() {
-        console.log("openFilterUI called")
-        // Обновляем список слоёв
         updateLayers()
-        // Открываем диалог
         searchDialog.open()
     }
 
-    // === ФУНКЦИИ РАБОТЫ С УСЛОВИЯМИ ===
     function addCondition() {
-        console.log("addCondition called")
-        var condition = {
+        if (!selectedLayer) {
+            mainWindow.displayToast(tr("Please select a layer first"))
+            return
+        }
+        conditionsModel.append({
             field: "",
             operator: "=",
             value: "",
             join: "AND"
-        }
-        conditions.push(condition)
-        rebuildConditionUI()
+        })
         updateApplyState()
     }
 
     function removeCondition(index) {
-        console.log("removeCondition called, index:", index)
-        if (index >= 0 && index < conditions.length) {
-            conditions.splice(index, 1)
-            rebuildConditionUI()
+        if (index >= 0 && index < conditionsModel.count) {
+            conditionsModel.remove(index)
             updateApplyState()
-        }
-    }
-
-    function rebuildConditionUI() {
-        console.log("rebuildConditionUI called, conditions count:", conditions.length)
-        // Очищаем существующие UI-элементы
-        for (var i = 0; i < conditionComponents.length; i++) {
-            var comp = conditionComponents[i]
-            if (comp && comp.parent) {
-                comp.destroy()
+            if (filterActive) {
+                applyFilterToLayer()
             }
         }
-        conditionComponents = []
-
-        // Создаём новые UI-элементы для каждого условия
-        var container = conditionsContainer
-        if (!container) return
-
-        for (var j = 0; j < conditions.length; j++) {
-            var cond = conditions[j]
-
-            // Создаём компонент условия
-            var component = Qt.createComponent("ConditionRow.qml")
-            if (component.status === Component.Ready) {
-                var row = component.createObject(container, {
-                    "conditionIndex": j,
-                    "fieldValue": cond.field,
-                    "operatorValue": cond.operator,
-                    "valueValue": cond.value,
-                    "joinValue": cond.join,
-                    "availableFields": getFieldNames(selectedLayer)
-                })
-
-                if (row) {
-                    row.fieldChanged.connect(function(index, value) {
-                        if (index >= 0 && index < conditions.length) {
-                            conditions[index].field = value
-                            updateFilter()
-                        }
-                    })
-                    row.operatorChanged.connect(function(index, value) {
-                        if (index >= 0 && index < conditions.length) {
-                            conditions[index].operator = value
-                            updateFilter()
-                        }
-                    })
-                    row.valueChanged.connect(function(index, value) {
-                        if (index >= 0 && index < conditions.length) {
-                            conditions[index].value = value
-                            updateFilter()
-                        }
-                    })
-                    row.joinChanged.connect(function(index, value) {
-                        if (index >= 0 && index < conditions.length) {
-                            conditions[index].join = value
-                            updateFilter()
-                        }
-                    })
-                    row.removeRequested.connect(function(index) {
-                        removeCondition(index)
-                    })
-
-                    conditionComponents.push(row)
-                }
-            } else {
-                console.log("Error creating ConditionRow:", component.errorString())
-            }
-        }
-
-        // Обновляем отображение кнопки "Добавить условие"
-        if (addConditionButton) {
-            addConditionButton.visible = conditions.length < 10
-        }
-        updateApplyState()
     }
 
     function getFieldNames(layer) {
-        if (!layer || !layer.fields) return []
+        if (!layer) return []
         var fields = layer.fields
-        return fields.names ? fields.names.slice().sort() : []
+        if (!fields) return []
+        var names = []
+        var count = (typeof fields.count === 'function') ? fields.count() : 0
+        if (count > 0) {
+            for (var i = 0; i < count; i++) {
+                var field = fields.field(i)
+                if (field) names.push(field.name)
+            }
+        } else if (fields.names) {
+            names = fields.names.slice()
+        }
+        var unique = []
+        for (var j = 0; j < names.length; j++) {
+            if (unique.indexOf(names[j]) === -1) unique.push(names[j])
+        }
+        return unique.sort()
     }
 
-    // === ПОСТРОЕНИЕ ВЫРАЖЕНИЯ ФИЛЬТРА ===
     function buildFilterExpression() {
-        console.log("buildFilterExpression called")
-        if (!selectedLayer || conditions.length === 0) return ""
+        if (!selectedLayer || conditionsModel.count === 0) return ""
 
         var exprParts = []
-        for (var i = 0; i < conditions.length; i++) {
-            var cond = conditions[i]
-            if (!cond.field || !cond.value) continue
+        for (var i = 0; i < conditionsModel.count; i++) {
+            var cond = conditionsModel.get(i)
+            if (!cond.field || !cond.value || cond.value.trim() === "") continue
 
             var fieldName = cond.field
             var operator = cond.operator
             var value = cond.value
-
-            // Экранируем кавычки в значении
             var escapedValue = value.replace(/'/g, "''")
 
             var part = ""
             if (operator === "LIKE" || operator === "ILIKE") {
                 part = '"' + fieldName + '" ' + operator + ' \'%' + escapedValue + '%\''
-            } else if (operator === "=" || operator === "!=" || operator === "<" || operator === ">" || operator === "<=" || operator === ">=") {
-                // Проверяем, является ли значение числом
+            } else {
+                // Проверяем, является ли значение числом (для дат нужно будет экранировать иначе, но оставим как есть)
                 if (!isNaN(value) && value.trim() !== "") {
                     part = '"' + fieldName + '" ' + operator + ' ' + value
                 } else {
                     part = '"' + fieldName + '" ' + operator + ' \'' + escapedValue + '\''
                 }
             }
-
             if (part) exprParts.push(part)
         }
 
         if (exprParts.length === 0) return ""
 
-        // Собираем выражение с операторами AND/OR
         var result = exprParts[0]
         for (var j = 1; j < exprParts.length; j++) {
-            var join = (j - 1 < conditions.length) ? conditions[j].join : "AND"
+            var join = (j < conditionsModel.count) ? conditionsModel.get(j).join : "AND"
             result += " " + join + " " + exprParts[j]
         }
-
-        console.log("Filter expression:", result)
         return result
     }
 
-    // === ПРИМЕНЕНИЕ ФИЛЬТРА ===
-    function updateFilter() {
-        console.log("updateFilter called")
+    function applyFilterToLayer() {
         if (!selectedLayer) return
-
         var expr = buildFilterExpression()
         savedExpr = expr
+        console.log("Filter expression:", expr)
 
         try {
             if (expr) {
-                selectedLayer.subsetString = ""
+                // Устанавливаем подзапрос (фильтр отображения)
+                selectedLayer.subsetString = expr
+                // Дополнительно выделяем объекты, чтобы визуально подсветить
                 selectedLayer.removeSelection()
                 selectedLayer.selectByExpression(expr)
                 selectedLayer.triggerRepaint()
                 mapCanvas.refresh()
                 filterActive = true
                 savedLayerName = selectedLayer.name
-
-                // Обновляем информационный баннер
                 if (infoBanner) infoBanner.visible = true
-                mainWindow.displayToast(tr("Filter applied: ") + conditions.length + tr(" conditions"))
+                mainWindow.displayToast(tr("Filter applied: ") + conditionsModel.count + tr(" conditions"))
             } else {
-                removeAllFilters()
+                // Снимаем фильтр
+                selectedLayer.subsetString = ""
+                selectedLayer.removeSelection()
+                selectedLayer.triggerRepaint()
+                mapCanvas.refresh()
+                filterActive = false
+                savedLayerName = ""
+                savedExpr = ""
+                if (infoBanner) infoBanner.visible = false
+                mainWindow.displayToast(tr("Filter cleared"))
             }
         } catch (e) {
             console.error("Filter error: " + e)
@@ -248,14 +173,11 @@ Item {
     }
 
     function applyFilter() {
-        console.log("applyFilter called")
-        updateFilter()
+        applyFilterToLayer()
         searchDialog.close()
     }
 
-    // === УДАЛЕНИЕ ФИЛЬТРА ===
     function removeAllFilters() {
-        console.log("removeAllFilters called")
         var layers = ProjectUtils.mapLayers(qgisProject)
         for (var id in layers) {
             var pl = layers[id]
@@ -271,24 +193,18 @@ Item {
         filterActive = false
         savedLayerName = ""
         savedExpr = ""
+        conditionsModel.clear()
 
-        // Очищаем условия
-        conditions = []
-        rebuildConditionUI()
-
-        if (featureFormItem) {
-            featureFormItem.state = "Hidden"
-        }
+        if (featureFormItem) featureFormItem.state = "Hidden"
 
         mapCanvas.refresh()
         updateLayers()
         updateApplyState()
         if (infoBanner) infoBanner.visible = false
+        mainWindow.displayToast(tr("Filter deleted"))
     }
 
-    // === UI ВСПОМОГАТЕЛЬНЫЕ ===
     function updateLayers() {
-        console.log("updateLayers called")
         var layers = ProjectUtils.mapLayers(qgisProject)
         var names = []
         for (var id in layers) {
@@ -301,9 +217,9 @@ Item {
         names.unshift(tr("Select a layer"))
         if (layerSelector) {
             layerSelector.model = names
-            if (filterActive && savedLayerName) {
-                var idx = names.indexOf(savedLayerName)
-                layerSelector.currentIndex = idx >= 0 ? idx : 0
+            if (selectedLayer) {
+                var idx = names.indexOf(selectedLayer.name)
+                layerSelector.currentIndex = (idx !== -1) ? idx : 0
             } else {
                 layerSelector.currentIndex = 0
             }
@@ -319,26 +235,29 @@ Item {
     }
 
     function updateApplyState() {
-        console.log("updateApplyState called")
         if (applyButton) {
-            var hasValidConditions = false
-            for (var i = 0; i < conditions.length; i++) {
-                if (conditions[i].field && conditions[i].value) {
-                    hasValidConditions = true
+            var hasValid = false
+            for (var i = 0; i < conditionsModel.count; i++) {
+                var cond = conditionsModel.get(i)
+                if (cond.field && cond.value && cond.value.trim() !== "") {
+                    hasValid = true
                     break
                 }
             }
-            applyButton.enabled = selectedLayer !== null && hasValidConditions
+            applyButton.enabled = selectedLayer !== null && hasValid
+        }
+        if (addConditionButton) {
+            addConditionButton.visible = conditionsModel.count < 10
         }
     }
 
     function tr(text) {
         var isFr = Qt.locale().name.substring(0, 2) === "fr"
         var dic = {
-            "FILTER": "FILTRE",
             "Filter deleted": "Фильтр удалён",
             "Filter applied: ": "Фильтр применён: ",
             " conditions": " условий",
+            "Filter cleared": "Фильтр снят",
             "Filter error: ": "Ошибка фильтра: ",
             "Select a layer": "Выберите слой",
             "Select a field": "Выберите поле",
@@ -346,12 +265,103 @@ Item {
             "Value": "Значение",
             "Add condition": "Добавить условие",
             "Apply filter": "Применить фильтр",
-            "Delete filter": "Удалить фильтр"
+            "Delete filter": "Удалить фильтр",
+            "Please select a layer first": "Сначала выберите слой"
         }
         return isFr && dic[text] ? dic[text] : (dic[text] || text)
     }
 
-    // === ИНФОРМАЦИОННЫЙ БАННЕР ===
+    // === КОМПОНЕНТ СТРОКИ УСЛОВИЯ (делегат) ===
+    Component {
+        id: conditionRowDelegate
+
+        RowLayout {
+            id: row
+            required property int index
+            required property var modelData
+
+            Layout.fillWidth: true
+            spacing: 4
+
+            // JOIN
+            QfComboBox {
+                id: joinCombo
+                Layout.preferredWidth: 55
+                Layout.preferredHeight: 32
+                model: ["AND", "OR"]
+                currentIndex: modelData.join === "AND" ? 0 : 1
+                visible: index > 0
+                onCurrentTextChanged: {
+                    filterToolRoot.conditionsModel.setProperty(index, "join", currentText)
+                    updateApplyState()
+                }
+            }
+
+            // Поле
+            QfComboBox {
+                id: fieldCombo
+                Layout.fillWidth: true
+                Layout.preferredHeight: 32
+                model: getFieldNames(selectedLayer)
+                Component.onCompleted: {
+                    var idx = model.indexOf(modelData.field)
+                    currentIndex = (idx !== -1) ? idx : 0
+                }
+                onCurrentTextChanged: {
+                    filterToolRoot.conditionsModel.setProperty(index, "field", currentText)
+                    updateApplyState()
+                }
+            }
+
+            // Оператор
+            QfComboBox {
+                id: operatorCombo
+                Layout.preferredWidth: 65
+                Layout.preferredHeight: 32
+                model: ["=", "!=", "<", ">", "<=", ">=", "LIKE", "ILIKE"]
+                currentIndex: {
+                    var idx = model.indexOf(modelData.operator)
+                    return (idx !== -1) ? idx : 0
+                }
+                onCurrentTextChanged: {
+                    filterToolRoot.conditionsModel.setProperty(index, "operator", currentText)
+                    updateApplyState()
+                }
+            }
+
+            // Значение
+            TextField {
+                id: valueField
+                Layout.fillWidth: true
+                Layout.preferredHeight: 32
+                placeholderText: qsTr("Value")
+                text: modelData.value
+                onTextChanged: {
+                    filterToolRoot.conditionsModel.setProperty(index, "value", text)
+                    updateApplyState()
+                }
+            }
+
+            // Кнопка удаления
+            Button {
+                Layout.preferredWidth: 32
+                Layout.preferredHeight: 32
+                text: "✕"
+                background: Rectangle { color: "#ff4444"; radius: 4 }
+                contentItem: Text {
+                    text: parent.text
+                    color: "white"
+                    horizontalAlignment: Text.AlignHCenter
+                    verticalAlignment: Text.AlignVCenter
+                }
+                onClicked: {
+                    removeCondition(index)
+                }
+            }
+        }
+    }
+
+    // === БАННЕР ===
     Rectangle {
         id: infoBanner
         parent: mapCanvas
@@ -363,7 +373,6 @@ Item {
         width: Math.min(bannerLayout.implicitWidth + 30, parent.width - 120)
         radius: 19
         color: "#B3333333"
-        border.width: 0
         visible: filterToolRoot.filterActive && !filterToolRoot.isFormVisible
 
         RowLayout {
@@ -374,9 +383,7 @@ Item {
             spacing: 10
 
             Rectangle {
-                width: 8
-                height: 8
-                radius: 4
+                width: 8; height: 8; radius: 4
                 color: highlightColor
                 Layout.alignment: Qt.AlignVCenter
             }
@@ -393,13 +400,10 @@ Item {
                     height: parent.height
                     verticalAlignment: Text.AlignVCenter
                     renderType: Text.NativeRendering
-
                     text: {
                         if (!filterToolRoot.savedExpr) return tr("Filter active")
                         var displayText = filterToolRoot.savedLayerName + " | " + filterToolRoot.savedExpr
-                        if (displayText.length > 40) {
-                            displayText = displayText.substring(0, 37) + "..."
-                        }
+                        if (displayText.length > 40) displayText = displayText.substring(0, 37) + "..."
                         return displayText
                     }
                     color: "white"
@@ -422,7 +426,7 @@ Item {
         }
     }
 
-    // === ОСНОВНОЙ ДИАЛОГ ===
+    // === ДИАЛОГ ===
     Dialog {
         id: searchDialog
         parent: mainWindow.contentItem
@@ -440,9 +444,7 @@ Item {
         MouseArea {
             anchors.fill: parent
             z: -1
-            onClicked: {
-                mouse.accepted = false
-            }
+            onClicked: mouse.accepted = false
         }
 
         ColumnLayout {
@@ -451,7 +453,6 @@ Item {
             anchors.margins: 8
             spacing: 10
 
-            // === ВЫБОР СЛОЯ ===
             Label {
                 text: tr("Select a layer")
                 font.bold: true
@@ -464,37 +465,49 @@ Item {
                 Layout.preferredHeight: 35
                 model: []
                 onCurrentTextChanged: {
-                    console.log("Layer selected:", currentText)
                     if (currentText === tr("Select a layer")) {
                         selectedLayer = null
-                        conditions = []
-                        rebuildConditionUI()
+                        conditionsModel.clear()
+                        updateApplyState()
                         return
                     }
-                    selectedLayer = getLayerByName(currentText)
-                    conditions = []
-                    rebuildConditionUI()
-                    updateApplyState()
+                    var layer = getLayerByName(currentText)
+                    if (layer) {
+                        selectedLayer = layer
+                        conditionsModel.clear()
+                        if (filterActive) {
+                            applyFilterToLayer()
+                        }
+                        updateApplyState()
+                    } else {
+                        console.warn("Layer not found:", currentText)
+                    }
                 }
             }
 
-            // === КОНТЕЙНЕР УСЛОВИЙ ===
+            // === КОНТЕЙНЕР УСЛОВИЙ с Repeater ===
             ScrollView {
+                id: conditionsScroll
                 Layout.fillWidth: true
-                Layout.preferredHeight: Math.min(300, conditions.length * 80 + 10)
+                Layout.preferredHeight: Math.min(300, conditionsModel.count * 75 + 10)
                 Layout.minimumHeight: 60
                 clip: true
 
                 ColumnLayout {
                     id: conditionsContainer
-                    width: parent.width
+                    width: parent.width - 10
                     spacing: 8
                     Layout.fillWidth: true
                     Layout.minimumHeight: 60
+
+                    Repeater {
+                        model: conditionsModel
+                        delegate: conditionRowDelegate
+                    }
                 }
             }
 
-            // === КНОПКА ДОБАВЛЕНИЯ ===
+            // === КНОПКА "ДОБАВИТЬ УСЛОВИЕ" ===
             Button {
                 id: addConditionButton
                 text: "+ " + tr("Add condition")
@@ -517,7 +530,6 @@ Item {
                 }
             }
 
-            // === КНОПКИ ПРИМЕНЕНИЯ/УДАЛЕНИЯ ===
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 5
