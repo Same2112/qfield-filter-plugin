@@ -51,6 +51,7 @@ Item {
         round: true
 
         onClicked: {
+            console.log("Toolbar button clicked")
             openFilterUI()
         }
 
@@ -60,8 +61,18 @@ Item {
         }
     }
 
+    // === ФУНКЦИЯ ОТКРЫТИЯ UI ===
+    function openFilterUI() {
+        console.log("openFilterUI called")
+        // Обновляем список слоёв
+        updateLayers()
+        // Открываем диалог
+        searchDialog.open()
+    }
+
     // === ФУНКЦИИ РАБОТЫ С УСЛОВИЯМИ ===
     function addCondition() {
+        console.log("addCondition called")
         var condition = {
             field: "",
             operator: "=",
@@ -70,21 +81,24 @@ Item {
         }
         conditions.push(condition)
         rebuildConditionUI()
+        updateApplyState()
     }
 
     function removeCondition(index) {
+        console.log("removeCondition called, index:", index)
         if (index >= 0 && index < conditions.length) {
             conditions.splice(index, 1)
             rebuildConditionUI()
+            updateApplyState()
         }
     }
 
     function rebuildConditionUI() {
+        console.log("rebuildConditionUI called, conditions count:", conditions.length)
         // Очищаем существующие UI-элементы
         for (var i = 0; i < conditionComponents.length; i++) {
             var comp = conditionComponents[i]
             if (comp && comp.parent) {
-                comp.parent = null
                 comp.destroy()
             }
         }
@@ -140,18 +154,16 @@ Item {
 
                     conditionComponents.push(row)
                 }
+            } else {
+                console.log("Error creating ConditionRow:", component.errorString())
             }
         }
 
         // Обновляем отображение кнопки "Добавить условие"
-        updateAddButtonVisibility()
-        updateApplyState()
-    }
-
-    function updateAddButtonVisibility() {
         if (addConditionButton) {
             addConditionButton.visible = conditions.length < 10
         }
+        updateApplyState()
     }
 
     function getFieldNames(layer) {
@@ -162,6 +174,7 @@ Item {
 
     // === ПОСТРОЕНИЕ ВЫРАЖЕНИЯ ФИЛЬТРА ===
     function buildFilterExpression() {
+        console.log("buildFilterExpression called")
         if (!selectedLayer || conditions.length === 0) return ""
 
         var exprParts = []
@@ -200,11 +213,13 @@ Item {
             result += " " + join + " " + exprParts[j]
         }
 
+        console.log("Filter expression:", result)
         return result
     }
 
     // === ПРИМЕНЕНИЕ ФИЛЬТРА ===
     function updateFilter() {
+        console.log("updateFilter called")
         if (!selectedLayer) return
 
         var expr = buildFilterExpression()
@@ -222,6 +237,7 @@ Item {
 
                 // Обновляем информационный баннер
                 if (infoBanner) infoBanner.visible = true
+                mainWindow.displayToast(tr("Filter applied: ") + conditions.length + tr(" conditions"))
             } else {
                 removeAllFilters()
             }
@@ -232,13 +248,14 @@ Item {
     }
 
     function applyFilter() {
+        console.log("applyFilter called")
         updateFilter()
         searchDialog.close()
-        mainWindow.displayToast(tr("Filter applied: ") + conditions.length + tr(" conditions"))
     }
 
     // === УДАЛЕНИЕ ФИЛЬТРА ===
     function removeAllFilters() {
+        console.log("removeAllFilters called")
         var layers = ProjectUtils.mapLayers(qgisProject)
         for (var id in layers) {
             var pl = layers[id]
@@ -254,7 +271,6 @@ Item {
         filterActive = false
         savedLayerName = ""
         savedExpr = ""
-        selectedLayer = null
 
         // Очищаем условия
         conditions = []
@@ -272,9 +288,15 @@ Item {
 
     // === UI ВСПОМОГАТЕЛЬНЫЕ ===
     function updateLayers() {
+        console.log("updateLayers called")
         var layers = ProjectUtils.mapLayers(qgisProject)
         var names = []
-        for (var id in layers) if (layers[id] && layers[id].type === 0) names.push(layers[id].name)
+        for (var id in layers) {
+            var layer = layers[id]
+            if (layer && layer.type === 0) {
+                names.push(layer.name)
+            }
+        }
         names.sort()
         names.unshift(tr("Select a layer"))
         if (layerSelector) {
@@ -282,17 +304,22 @@ Item {
             if (filterActive && savedLayerName) {
                 var idx = names.indexOf(savedLayerName)
                 layerSelector.currentIndex = idx >= 0 ? idx : 0
-            } else layerSelector.currentIndex = 0
+            } else {
+                layerSelector.currentIndex = 0
+            }
         }
     }
 
     function getLayerByName(name) {
         var layers = ProjectUtils.mapLayers(qgisProject)
-        for (var id in layers) if (layers[id].name === name) return layers[id]
+        for (var id in layers) {
+            if (layers[id].name === name) return layers[id]
+        }
         return null
     }
 
     function updateApplyState() {
+        console.log("updateApplyState called")
         if (applyButton) {
             var hasValidConditions = false
             for (var i = 0; i < conditions.length; i++) {
@@ -437,6 +464,7 @@ Item {
                 Layout.preferredHeight: 35
                 model: []
                 onCurrentTextChanged: {
+                    console.log("Layer selected:", currentText)
                     if (currentText === tr("Select a layer")) {
                         selectedLayer = null
                         conditions = []
